@@ -1,0 +1,5 @@
+train: /home/biscuit/文档/JieYingProject/dataset/images/train
+val: /home/biscuit/文档/JieYingProject/dataset/images/val
+
+nc: 1
+names: ['basketball']
