@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 #include "../kmfilter/KF.hpp"
 #include <Eigen/Dense>
+#include <unordered_map>
 
 /*
 这个功能是坐标转化+卡尔曼滤波。
@@ -36,9 +37,11 @@ public:
     qos_profile.reliability(RMW_QOS_POLICY_RELIABILITY_RELIABLE);
     //pub里面用了reliable这里也要用
 
-    //这下面就是接收pub轨迹点信息的代码了
+    //这下面就是创建订阅，接收pub轨迹点信息的代码了
     sub_center_ = create_subscription<geometry_msgs::msg::PointStamped>(
-      "/ball/center_px", qos_profile,
+      "/ball/center_px", //topic的名称
+      qos_profile,//qos,就是在pub里面定义的那个
+      // 下面这一大坨是回调函数，就是收到消息了该怎么办。用了lambda表达式，比较简洁
       [this](const geometry_msgs::msg::PointStamped::SharedPtr msg){
         last_cx_ = msg->point.x;
         last_cy_ = msg->point.y;
@@ -46,11 +49,12 @@ public:
         last_stamp_ = msg->header.stamp;
         have_center_ = true;
         have_width_ = true;
-        printIfReady();
+        printIfReady(msg);
+        //显然这里面没有获取id，因为id和上面获取的信息在 ROS 消息结构中的位置和用途不一样
+        //坐标是放在point里面的，是浮点数，可以直接拿来用
       });
-    // 不再需要sub_width_
-    //这里新加一个pub,发卡尔曼滤波信息给visualize.py,用python实现可视化
-    kf_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>("/ball/kf_pos", 10);
+    //下面加一个pub,发卡尔曼滤波信息给visualize.py,用python实现可视化
+    kf_pub_ = this->create_publisher<geometry_msgs::msg::PointStamped>("/ball/kf_pos", 100);
   }
 
   ~BallCoordSub() {
@@ -59,20 +63,28 @@ public:
 
 
 private:
-  KF kf_;
   std::vector<cv::Point3d> raw_points_;
   std::vector<cv::Point3d> kf_points_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr sub_center_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr kf_pub_;
   rclcpp::Time last_stamp_;
+  std::unordered_map<int, KF> kf_map_; // 整了一个字典，key是目标的id,值是对应的卡尔曼滤波实例，这样就可以不同目标不同滤波。
 
-  void printIfReady() {
+  void printIfReady(const geometry_msgs::msg::PointStamped::SharedPtr& msg) {
+    RCLCPP_INFO(this->get_logger(), "收到篮球id: %s", msg->header.frame_id.c_str());
     if (have_center_ && have_width_) {
+      // 获取id的方法在这里，在publisher.py里面id被放在消息头header里面。
+      int ball_id = 0;
+      try {
+        ball_id = std::stoi(msg->header.frame_id);//注意header里面的是字符串，需要转int
+      } catch (...) {//如果获取不到或者说只有一个，id=0
+        ball_id = 0;
+      }
       // solvePnP方法：用球心和球面上下左右五点做PnP解算，直接带参数就行，不用套公式了
       double cx = last_cx_;
       double cy = last_cy_;
       double w = last_w_;
-      double h = last_w_; // 假设为正圆
+      double h = last_w_; 
       double D = 0.246; // 球实际直径，单位：米
       double r = D / 2.0;
       std::vector<cv::Point2f> imagePoints = {
@@ -94,25 +106,27 @@ private:
       if (pnp_ok) {
         Eigen::Vector3d obs(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
         double now = this->now().seconds();
-        kf_.update(obs, now);
+        // 多目标卡尔曼滤波
+        kf_map_[ball_id].update(obs, now);
         raw_points_.emplace_back(obs[0], obs[1], obs[2]);
-        kf_points_.emplace_back(kf_.getPosition()[0], kf_.getPosition()[1], kf_.getPosition()[2]);
+        kf_points_.emplace_back(kf_map_[ball_id].getPosition()[0], kf_map_[ball_id].getPosition()[1], kf_map_[ball_id].getPosition()[2]);
         for (int i = 1; i <= 2; ++i) {
           double t_interp = now + i * 0.01;
-          kf_.predict(t_interp);
-          Eigen::Vector3d pred = kf_.getPosition();
+          kf_map_[ball_id].predict(t_interp);
+          Eigen::Vector3d pred = kf_map_[ball_id].getPosition();
           kf_points_.emplace_back(pred[0], pred[1], pred[2]);
         }
-        // 发布卡尔曼滤波结果，带时间戳
+        // 发布卡尔曼滤波结果，带时间戳和id
         geometry_msgs::msg::PointStamped kf_msg;
         kf_msg.header.stamp = last_stamp_;
-        kf_msg.point.x = kf_.getPosition()[0];
-        kf_msg.point.y = kf_.getPosition()[1];
-        kf_msg.point.z = kf_.getPosition()[2];
+        kf_msg.header.frame_id = std::to_string(ball_id);
+        kf_msg.point.x = kf_map_[ball_id].getPosition()[0];
+        kf_msg.point.y = kf_map_[ball_id].getPosition()[1];
+        kf_msg.point.z = kf_map_[ball_id].getPosition()[2];
         kf_pub_->publish(kf_msg);
-        RCLCPP_INFO(this->get_logger(), "PnP Camera coords: (%.3f, %.3f, %.3f) [m]", tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
+        RCLCPP_INFO(this->get_logger(), "PnP 解算后的相机坐标系下的球中心点(3d): (%.3f, %.3f, %.3f) [m] id=%d", tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2), ball_id);
       } else {
-        RCLCPP_WARN(this->get_logger(), "solvePnP failed!");
+        RCLCPP_WARN(this->get_logger(), "solvePnP 没成功");
       }
 
       // 公式法（备用）
