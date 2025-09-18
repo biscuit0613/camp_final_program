@@ -31,6 +31,22 @@ public:
     for (size_t i = 0; i < j["distortion_coefficients"].size(); ++i)
       dist_coeffs_.at<double>(0, i) = j["distortion_coefficients"][i];
 
+    // 声明参数
+    this->declare_parameter("fps", 30.0);
+    auto param_fps = this->get_parameter("fps");
+    fps_ = param_fps.as_double();
+    RCLCPP_INFO(this->get_logger(), "初始 FPS: %.2f", fps_);
+
+    // 订阅 FPS
+    sub_fps_ = this->create_subscription<std_msgs::msg::Float32>(
+      "/ball/fps",
+      10,
+      [this](const std_msgs::msg::Float32::SharedPtr msg) {
+        fps_ = msg->data;
+        RCLCPP_INFO(this->get_logger(), "更新 FPS: %.2f", fps_);
+      });
+
+
     //跟pub那边一样，也建立一个qos
     rclcpp::QoS qos_profile(100);
     //qos_profile（）里面的数是队列深度
@@ -66,20 +82,44 @@ private:
   std::vector<cv::Point3d> raw_points_;
   std::vector<cv::Point3d> kf_points_;
   rclcpp::Subscription<geometry_msgs::msg::PointStamped>::SharedPtr sub_center_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr sub_fps_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr kf_pub_;
   rclcpp::Time last_stamp_;
   std::unordered_map<int, KF> kf_map_; // 整了一个字典，key是目标的id,值是对应的卡尔曼滤波实例，这样就可以不同目标不同滤波。
+  std::unordered_map<int, int> last_frame_num_map_; // 各目标最后处理（发布）的帧号
+  std::unordered_map<int, double> last_time_map_;    // 各目标最后时间（秒）
+  double fps_; // 从订阅获取
 
   void printIfReady(const geometry_msgs::msg::PointStamped::SharedPtr& msg) {
-    RCLCPP_INFO(this->get_logger(), "收到篮球id: %s", msg->header.frame_id.c_str());
-    if (have_center_ && have_width_) {
-      // 获取id的方法在这里，在publisher.py里面id被放在消息头header里面。
-      int ball_id = 0;
-      try {
-        ball_id = std::stoi(msg->header.frame_id);//注意header里面的是字符串，需要转int
-      } catch (...) {//如果获取不到或者说只有一个，id=0
-        ball_id = 0;
+    // 解析frame_id，获取obj_id和frame_num
+    std::stringstream ss(msg->header.frame_id);
+    int obj_id, frame_num;
+    char delim;
+    ss >> obj_id >> delim >> frame_num;
+    RCLCPP_INFO(this->get_logger(), "收到篮球id: %d, frame: %d", obj_id, frame_num);
+
+    if (obj_id == -1) {
+      // 空帧：对所有活跃目标在该帧时刻进行一次预测并发布
+      double time = frame_num / fps_;
+      for (auto& pair : kf_map_) {
+        int id = pair.first;
+        pair.second.predict(time);
+        Eigen::Vector3d pred = pair.second.getPosition();
+        geometry_msgs::msg::PointStamped kf_msg;
+        kf_msg.header.stamp = msg->header.stamp;
+        kf_msg.header.frame_id = std::to_string(id) + "_" + std::to_string(frame_num);
+        kf_msg.point.x = pred[0];
+        kf_msg.point.y = pred[1];
+        kf_msg.point.z = pred[2];
+        kf_pub_->publish(kf_msg);
+        last_frame_num_map_[id] = frame_num; // 推进各自的最后帧号
+        last_time_map_[id] = time;
+        RCLCPP_INFO(this->get_logger(), "空帧预测: id=%d, frame=%d, pos=(%.3f, %.3f, %.3f)", id, frame_num, pred[0], pred[1], pred[2]);
       }
+      return;
+    }
+
+    if (have_center_ && have_width_) {
       // solvePnP方法：用球心和球面上下左右五点做PnP解算，直接带参数就行，不用套公式了
       double cx = last_cx_;
       double cy = last_cy_;
@@ -105,26 +145,48 @@ private:
       bool pnp_ok = cv::solvePnP(objectPoints, imagePoints, camera_matrix_, dist_coeffs_, rvec, tvec, false, cv::SOLVEPNP_ITERATIVE);
       if (pnp_ok) {
         Eigen::Vector3d obs(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
-        double now = this->now().seconds();
-        // 多目标卡尔曼滤波
-        kf_map_[ball_id].update(obs, now);
-        raw_points_.emplace_back(obs[0], obs[1], obs[2]);
-        kf_points_.emplace_back(kf_map_[ball_id].getPosition()[0], kf_map_[ball_id].getPosition()[1], kf_map_[ball_id].getPosition()[2]);
-        for (int i = 1; i <= 2; ++i) {
-          double t_interp = now + i * 0.01;
-          kf_map_[ball_id].predict(t_interp);
-          Eigen::Vector3d pred = kf_map_[ball_id].getPosition();
-          kf_points_.emplace_back(pred[0], pred[1], pred[2]);
+        double time_cur = frame_num / fps_;  // 使用帧号时间同步
+
+        // 插值缺失帧（基于该目标上一次的帧号），最多插值 5 帧避免误差累积
+        int last_frame_for_id = last_frame_num_map_.count(obj_id) ? last_frame_num_map_[obj_id] : (frame_num - 1);
+        int missing = frame_num - last_frame_for_id ;
+        if (missing > 1 && missing <= 5) {
+          for (int i = 1; i <= missing; ++i) {
+            int frame_interp = last_frame_for_id + i;
+            double t_interp = static_cast<double>(frame_interp) / fps_;
+            kf_map_[obj_id].predict(t_interp);
+            Eigen::Vector3d pred = kf_map_[obj_id].getPosition();
+            geometry_msgs::msg::PointStamped kf_msg;
+            kf_msg.header.stamp = msg->header.stamp;
+            kf_msg.header.frame_id = std::to_string(obj_id) + "_" + std::to_string(frame_interp);
+            kf_msg.point.x = pred[0];
+            kf_msg.point.y = pred[1];
+            kf_msg.point.z = pred[2];
+            kf_pub_->publish(kf_msg);
+            last_frame_num_map_[obj_id] = frame_interp;
+            last_time_map_[obj_id] = t_interp;
+            RCLCPP_INFO(this->get_logger(), "插值点: id=%d, frame=%d, pos=(%.3f, %.3f, %.3f)", obj_id, frame_interp, pred[0], pred[1], pred[2]);
+          }
+        } else if (missing > 5) {
+          RCLCPP_WARN(this->get_logger(), "缺失帧过多 (%d)，跳过插值", missing);
         }
-        // 发布卡尔曼滤波结果，带时间戳和id
+
+        // 使用当前观测更新滤波器
+        kf_map_[obj_id].update(obs, time_cur);
+        raw_points_.emplace_back(obs[0], obs[1], obs[2]);
+        kf_points_.emplace_back(kf_map_[obj_id].getPosition()[0], kf_map_[obj_id].getPosition()[1], kf_map_[obj_id].getPosition()[2]);
+
+        // 发布当前帧的卡尔曼滤波结果
         geometry_msgs::msg::PointStamped kf_msg;
         kf_msg.header.stamp = last_stamp_;
-        kf_msg.header.frame_id = std::to_string(ball_id);
-        kf_msg.point.x = kf_map_[ball_id].getPosition()[0];
-        kf_msg.point.y = kf_map_[ball_id].getPosition()[1];
-        kf_msg.point.z = kf_map_[ball_id].getPosition()[2];
+        kf_msg.header.frame_id = std::to_string(obj_id) + "_" + std::to_string(frame_num);
+        kf_msg.point.x = kf_map_[obj_id].getPosition()[0];
+        kf_msg.point.y = kf_map_[obj_id].getPosition()[1];
+        kf_msg.point.z = kf_map_[obj_id].getPosition()[2];
         kf_pub_->publish(kf_msg);
-        RCLCPP_INFO(this->get_logger(), "PnP 解算后的相机坐标系下的球中心点(3d): (%.3f, %.3f, %.3f) [m] id=%d", tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2), ball_id);
+        last_frame_num_map_[obj_id] = frame_num;
+        last_time_map_[obj_id] = time_cur;
+        RCLCPP_INFO(this->get_logger(), "PnP 解算后的相机坐标系下的球中心点(3d): (%.3f, %.3f, %.3f) [m] id=%d", tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2), obj_id);
       } else {
         RCLCPP_WARN(this->get_logger(), "solvePnP 没成功");
       }

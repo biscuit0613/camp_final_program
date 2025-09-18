@@ -23,6 +23,7 @@ class YoloBallPublisher(Node):
         # qos里面第一个参数是深度（就是能存多少），第二个参数是可靠性策略（这里reliable,确保消息送达）
         self.pub_center = self.create_publisher(PointStamped, '/ball/center_px', qos)
         self.pub_width  = self.create_publisher(Float32, '/ball/width_px', qos)
+        self.pub_fps = self.create_publisher(Float32, '/ball/fps', qos)
 
         # 获取参数值
         video_path = self.get_parameter('video_path').get_parameter_value().string_value
@@ -41,15 +42,22 @@ class YoloBallPublisher(Node):
             self.destroy_node()
             return
 
+        # 获取 FPS 并发布
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+        fps_msg = Float32()
+        fps_msg.data = self.fps
+        self.pub_fps.publish(fps_msg)
+        self.get_logger().info(f"视频 FPS: {self.fps}")
+
         # 设置定时器周期（根据视频帧率）
-        fps = self.cap.get(cv2.CAP_PROP_FPS)
-        period = 1.0 / fps if fps and fps > 0 else 0.03
+        period = 1.0 / self.fps if self.fps and self.fps > 0 else 0.03
         self.timer = self.create_timer(period, self.loop)
 
         # 初始化轨迹字典：每个 obj_id 对应一个点序列
         self.trajectories = {}
         # 统计发布次数
         self.publish_count = 0
+        self.frame_idx = 0
 
         self.out_path = 'yolo_detection_output.mp4'
         self.out_writer = None
@@ -64,6 +72,8 @@ class YoloBallPublisher(Node):
             cv2.destroyAllWindows()
             self.destroy_node()
             return
+
+        self.frame_idx += 1
 
         # YOLO 跟踪推理，采用track方法，（detect只有框没有id）
         #这里挺纠结的，detect方法只能检测框，没有id，track方法能检测框还能给每个框分配一个id，但是检测率不如detect
@@ -95,27 +105,37 @@ class YoloBallPublisher(Node):
                 #header包含时间戳和坐标系信息，point包含三维坐标
                 msg_center = PointStamped()
                 msg_center.header.stamp = self.get_clock().now().to_msg()
-                msg_center.header.frame_id = str(obj_id)  # 传递id
+                msg_center.header.frame_id = f"{obj_id}_{self.frame_idx}"  # 传递id和帧号
                 msg_center.point.x = cx
                 msg_center.point.y = cy
                 msg_center.point.z = width
                 self.pub_center.publish(msg_center)
                 self.publish_count += 1
-                # 把框和中心点可视化
-                x1 = int(cx - width / 2)
-                y1 = int(cy - h / 2)
-                x2 = int(cx + width / 2)
-                y2 = int(cy + h / 2)
-                cv2.rectangle(frame, (x1, y1), (x2, y2), (0,255,0), 2)
-                cv2.circle(frame, (int(cx), int(cy)), 5, (0,0,255), -1)
+                # 把框和中心点可视化（移除显示，由 visualize.py 处理）
+                # x1 = int(cx - width / 2)
+                # y1 = int(cy - h / 2)
+                # x2 = int(cx + width / 2)
+                # y2 = int(cy + h / 2)
+                # cv2.rectangle(frame, (x1, y1), (x2, y2), (0,255,0), 2)
+                # cv2.circle(frame, (int(cx), int(cy)), 5, (0,0,255), -1)
                 # 显示框id和置信度
-                label = f'id:{obj_id},conf:{confs[i]:.2f}'
-                cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
-                pts = self.trajectories[obj_id] #画轨迹
-                for j in range(1, len(pts)):
-                    pt1 = (int(pts[j - 1][0]), int(pts[j - 1][1]))
-                    pt2 = (int(pts[j][0]), int(pts[j][1]))
-                    cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
+                # label = f'id:{obj_id},conf:{confs[i]:.2f}'
+                # cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,255), 1)
+                # pts = self.trajectories[obj_id] #画轨迹
+                # for j in range(1, len(pts)):
+                #     pt1 = (int(pts[j - 1][0]), int(pts[j - 1][1]))
+                #     pt2 = (int(pts[j][0]), int(pts[j][1]))
+                #     cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
+        else:
+            # 空帧，发布空消息
+            msg_center = PointStamped()
+            msg_center.header.stamp = self.get_clock().now().to_msg()
+            msg_center.header.frame_id = f"-1_{self.frame_idx}"
+            msg_center.point.x = 0.0
+            msg_center.point.y = 0.0
+            msg_center.point.z = 0.0
+            self.pub_center.publish(msg_center)
+            self.publish_count += 1
 
         # 视频保存
         if self.out_writer is None:
@@ -126,16 +146,14 @@ class YoloBallPublisher(Node):
         # 保存视频帧
         self.out_writer.write(frame)
 
-        # 显示图像窗口
-        cv2.imshow("YOLO Tracking", frame)
-        cv2.waitKey(1)
+        # 移除显示窗口，由 visualize.py 处理
 
 def main():
     rclpy.init()
     node = YoloBallPublisher()
     rclpy.spin(node)
     rclpy.shutdown()
-    cv2.destroy_all_windows()
+    cv2.destroyAllWindows()
 
 if __name__ == "__main__":
     main()
