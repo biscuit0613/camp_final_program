@@ -12,7 +12,7 @@ class YoloBallPublisher(Node):
         super().__init__('yolo_ball_publisher')
 
         # 声明 ROS 参数
-        self.declare_parameter('video_path', 'test5/rgb.mp4')
+        self.declare_parameter('video_path', 'test4/rgb.mp4')
         self.declare_parameter('model_path', 'v1.pt')
         self.declare_parameter('conf_thresh', 0.7)
 
@@ -49,15 +49,11 @@ class YoloBallPublisher(Node):
         self.pub_fps.publish(fps_msg)
         self.get_logger().info(f"视频 FPS: {self.fps}")
 
-        # 设置定时器周期（根据视频帧率）
-        period = 1.0 / self.fps if self.fps and self.fps > 0 else 0.03
-        self.timer = self.create_timer(period, self.loop)
-
-        # 初始化轨迹字典：每个 obj_id 对应一个点序列
+        # 初始化轨迹字典：每个 obj_id 对应一个点
         self.trajectories = {}
-        # 统计发布次数
-        self.publish_count = 0
-        self.frame_idx = 0
+        # 统计发布次数：包括发出的球的坐标数还有检测的帧数
+        self.publish_count = 0#发布的坐标数
+        self.frame_idx = 0#帧索引，也就是累计帧数。无论是否检测到球，是否发出坐标都会+1
 
         self.out_path = 'yolo_detection_output.mp4'
         self.out_writer = None
@@ -66,14 +62,14 @@ class YoloBallPublisher(Node):
         ok, frame = self.cap.read()
         if not ok:
             self.get_logger().info('视频放完了')
-            self.get_logger().info(f'总共发布的坐标数(和cpp那边对下帐): {self.publish_count}')
+            self.get_logger().info(f'总共发布的坐标数: {self.publish_count}')
             if self.out_writer is not None:
                 self.out_writer.release()
             cv2.destroyAllWindows()
             self.destroy_node()
-            return
+            return False  # 视频结束，返回 False
 
-        self.frame_idx += 1
+        self.frame_idx += 1#帧索引
 
         # YOLO 跟踪推理，采用track方法，（detect只有框没有id）
         #这里挺纠结的，detect方法只能检测框，没有id，track方法能检测框还能给每个框分配一个id，但是检测率不如detect
@@ -83,19 +79,21 @@ class YoloBallPublisher(Node):
         if len(results) and results[0].boxes is not None:
             boxes = results[0].boxes
             xywh = boxes.xywh.cpu().numpy()
-            confs = boxes.conf.cpu().numpy() if hasattr(boxes, 'conf') else [1.0]*len(xywh)
+            # confs = boxes.conf.cpu().numpy() if hasattr(boxes, 'conf') else [1.0]*len(xywh)
             if hasattr(boxes, 'id') and boxes.id is not None:
                 ids = boxes.id.cpu().numpy()
                 print('当前帧的id字典是',ids)
+                # 这里获取的球id只是为了打印出来看看的，真正发出去的id是下面限制在0和1之间
             else:
                 ids = list(range(len(xywh)))
-            # 遍历所有检测框，根据id不同发信息。
+            # 遍历所有检测框，根据检测框id不同发信息。
             for i, box in enumerate(xywh):
                 x_center, y_center, w, h = map(float, box)
                 cx = x_center
                 cy = y_center
                 width = max(1.0, w)
-                obj_id = int(ids[i])
+                # obj_id才是传去cpp的id
+                obj_id = min(i, 1)  # 限制 ID 为 0 或 1（最多两个球），不然滤波器那边会乱套。
                 print(f'检测框{i}的ID是{obj_id}')
                 if obj_id not in self.trajectories:
                     self.trajectories[obj_id] = []
@@ -103,15 +101,16 @@ class YoloBallPublisher(Node):
                 # 用PointStamped带时间戳发布中心点
                 #PointStamped是geometry_msgs包里定义的一个消息类型，包含一个三维点和时间戳信息，由header和point两个部分组成
                 #header包含时间戳和坐标系信息，point包含三维坐标
-                msg_center = PointStamped()
-                msg_center.header.stamp = self.get_clock().now().to_msg()
+                msg_center = PointStamped()#创建一个PointStamped消息对象
+                msg_center.header.stamp = self.get_clock().now().to_msg()#时间戳
                 msg_center.header.frame_id = f"{obj_id}_{self.frame_idx}"  # 传递id和帧号
+                #obj_id_frame_id
                 msg_center.point.x = cx
                 msg_center.point.y = cy
                 msg_center.point.z = width
                 self.pub_center.publish(msg_center)
                 self.publish_count += 1
-                # 把框和中心点可视化（移除显示，由 visualize.py 处理）
+                # 把框和中心点可视化（由 visualize.py 处理）
                 # x1 = int(cx - width / 2)
                 # y1 = int(cy - h / 2)
                 # x2 = int(cx + width / 2)
@@ -145,13 +144,19 @@ class YoloBallPublisher(Node):
 
         # 保存视频帧
         self.out_writer.write(frame)
-
-        # 移除显示窗口，由 visualize.py 处理
+        # 这里本来还有yolo识别的显示窗口，给删了，可视化交给 visualize.py 处理
+        return True  # 继续循环
 
 def main():
     rclpy.init()
     node = YoloBallPublisher()
-    rclpy.spin(node)
+    while rclpy.ok():
+        if not node.loop():
+            break  # 视频结束，退出循环
+        rclpy.spin_once(node, timeout_sec=0.01)
+        if cv2.waitKey(int(1000 / node.fps)) & 0xFF == 27:
+            break
+    node.destroy_node()
     rclpy.shutdown()
     cv2.destroyAllWindows()
 
