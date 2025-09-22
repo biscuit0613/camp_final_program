@@ -8,7 +8,7 @@ find_package(std_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 include_directories(${EIGEN3_INCLUDE_DIRS})
 
-add_executable(subscriber src/subscriber.cpp ../kmfilter/KF.cpp)
+add_executable(subscriber src/subscriber.cpp ../kmfilter/KalmanFilterJerk.cpp)
 find_package(nlohmann_json REQUIRED)
 find_package(OpenCV REQUIRED)
 include_directories(${NLOHMANN_JSON_INCLUDE_DIRS})

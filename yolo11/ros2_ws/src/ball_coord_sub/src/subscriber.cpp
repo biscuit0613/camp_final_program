@@ -5,7 +5,7 @@
 #include <opencv2/opencv.hpp>
 #include <fstream>
 #include <nlohmann/json.hpp>
-#include "../kmfilter/KF.hpp"
+#include "../kmfilter/KalmanFilterJerk.hpp"
 #include <Eigen/Dense>
 #include <unordered_map>
 
@@ -83,7 +83,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr sub_fps_;
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr kf_pub_;
   rclcpp::Time last_stamp_;
-  std::unordered_map<int, KF> kf_map_; // 整了一个字典，key是目标的id,值是对应的卡尔曼滤波实例，这样就可以不同目标不同滤波。
+  std::unordered_map<int, KalmanFilterJerk> kf_map_; // 整了一个字典，key是目标的id,值是对应的卡尔曼滤波实例，这样就可以不同目标不同滤波。
   std::unordered_map<int, int> last_frame_num_map_; // 各目标（键：球的id）最后发布的帧号(值)
   std::unordered_map<int, double> last_time_map_;    // 各目标最后时间（秒）
   double fps_; // 从订阅获取
@@ -146,13 +146,15 @@ private:
       if (pnp_ok) {
         RCLCPP_INFO(this->get_logger(), "PnP 解算后的相机坐标系下的球中心点(3d): (%.3f, %.3f, %.3f) [m] id=%d", tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2), obj_id);
         Eigen::Vector3d obs(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
+        //obs是观测值，也就是PnP解算出来的坐标
         double time_cur = frame_num / fps_;  // 使用帧号时间同步
 
         // 插值缺失帧（基于该目标上一次的帧号）
         int last_frame_id = last_frame_num_map_.count(obj_id) ? last_frame_num_map_[obj_id] : (frame_num - 1);
         int missing = frame_num - last_frame_id-1;
         int corrected_missing = 0;// 记录实际插值的帧数
-        int KMrate = 15;//对于识别出球的帧之间，补帧的倍率（这里3倍补帧）
+        int KMrate = 6;//对于识别出球的帧之间，补帧的倍率(数值越大，补帧点迹越断裂)
+        float KMfix = 2.0;//这是一个神奇的参数，可以调节插值的效果（应该是步长的问题），先留着(数值越大，插值点越方向越凌乱，点迹越离散)
         if (missing >= 1 ) {// 说明中间有帧没识别出球，进行插值，需要嵌套两层循环
           for (size_t i = 0; i < missing; i++)// 外层循环，针对缺失的帧数
           {
@@ -162,10 +164,10 @@ private:
             for (int j = 1; j <= KMrate; ++j) {  
               int frame_interp = last_frame_id + j;  // 计算插值帧号
               double t_interp = frame_interp / fps_;  // 计算插值时间
-              kf_map_[obj_id].predict(5.0 / (fps_ * KMrate));  // 卡尔曼滤波器预测
+              kf_map_[obj_id].predict(KMfix / (fps_ * KMrate));  // 卡尔曼滤波器预测
               Eigen::Vector3d pred = kf_map_[obj_id].getPosition();  // 获取预测位置
               current_obs = pred;
-              kf_map_[obj_id].update(current_obs, 1.0 / (fps_ * KMrate));  // 用当前估计更新滤波器
+              // kf_map_[obj_id].update(current_obs, KMfix / (fps_ * KMrate));  // 用当前估计更新滤波器
               geometry_msgs::msg::PointStamped kf_msg;  // 创建消息
               kf_msg.header.stamp = msg->header.stamp;  // 设置时间戳
               kf_msg.header.frame_id = std::to_string(obj_id) + "_" + std::to_string(frame_interp);  // 设置帧ID
@@ -184,7 +186,7 @@ private:
         if (corrected_missing > 0) {
           RCLCPP_INFO(this->get_logger(), "插了%d帧", corrected_missing); 
         }
-        kf_map_[obj_id].predict(5.0 / fps_ );  // 预测
+        kf_map_[obj_id].predict(KMfix / fps_ );  // 预测
         kf_map_[obj_id].update(obs, 1.0 / (fps_ * KMrate));  // 初始化KF
         
         // 发布原始观测点
@@ -198,9 +200,9 @@ private:
         
         for (int i = 0; i < KMrate; i++)
         {
-          kf_map_[obj_id].predict(5.0 / (fps_ * KMrate));  // 预测
+          kf_map_[obj_id].predict(KMfix / (fps_ * KMrate));  // 预测
           Eigen::Vector3d kf_pos = kf_map_[obj_id].getPosition();  // 获取预测估计位置
-          // kf_map_[obj_id].update(kf_pos, 1.0 / (fps_ * KMrate));  // 更新
+          // kf_map_[obj_id].update(kf_pos, (1.0*KMfix) / (fps_ * KMrate));  // 更新
           RCLCPP_INFO(this->get_logger(), "Raw point: (%.3f, %.3f, %.3f), KF point: (%.3f, %.3f, %.3f)", 
             obs[0], obs[1], obs[2],  // 使用 obs 作为 Raw point
             kf_pos[0], kf_pos[1], kf_pos[2]);

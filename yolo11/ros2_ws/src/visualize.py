@@ -37,6 +37,7 @@ class KFVisualizer(Node):
         frame_num = int(frame_num_str)
         t_rel = frame_num / self.fps
         print(f'收到球的id是 {ball_id}: 坐标是{msg.point.x}, {msg.point.y}, {msg.point.z}, frame={frame_num}, raw={is_raw}')
+        # print(f'收到球的id是 {ball_id}: 坐标是{msg.point.x}, {msg.point.y}, {msg.point.z}, frame={frame_num}')
         if ball_id not in self.points_dict:
             self.points_dict[ball_id] = []
         self.points_dict[ball_id].append((t_rel, (msg.point.x, msg.point.y, msg.point.z)))#在点的字典里依次添加点
@@ -77,7 +78,8 @@ class KFVisualizer(Node):
                         rvec = np.zeros((3, 1), dtype=np.float64)
                         tvec = np.zeros((3, 1), dtype=np.float64)
                         pt2d, _ = cv2.projectPoints(pt3d, rvec, tvec, self.camera_matrix, self.dist_coeffs)
-                        px, py = int(pt2d[0][0][0]), int(pt2d[0][0][1])
+                        px = int(pt2d[0][0][0].item())
+                        py = int(pt2d[0][0][1].item())
                         cv2.circle(frame, (px, py), 4, color, -1)
             frame_idx += 1
             out.write(frame)
