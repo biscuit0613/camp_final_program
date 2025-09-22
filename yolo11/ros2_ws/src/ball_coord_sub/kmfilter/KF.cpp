@@ -1,12 +1,30 @@
 #include "KF.hpp"
 
 KF::KF() {
+    // 初始化状态向量为零
     state_.setZero();
+
+    // 初始化协方差矩阵 P_
     P_.setIdentity();
-    Q_.setIdentity();
-    Q_ *= 1e-2; // 过程噪声：预测不确定性，调大更依赖观测
-    R_.setIdentity();
-    R_ *= 1e-3; // 观测噪声：调小更信任观测（测量结果置信度更高）
+    P_ *= 1e-3; // 初始不确定性较小，表示对初始状态较有信心
+
+    // 初始化过程噪声矩阵 Q_
+    Q_.setZero();
+    float sigma_a = 0.7; // 加速度噪声标准差（过程噪声来自于学长的篮球技术）
+    for (int i = 0; i < 3; ++i) {
+        Q_(i, i) = 0.25 * sigma_a * sigma_a;       // 位置噪声
+        Q_(i + 3, i + 3) = sigma_a * sigma_a;      // 速度噪声
+        Q_(i + 6, i + 6) = sigma_a * sigma_a;      // 加速度噪声
+    }
+
+    // 初始化观测噪声矩阵 R_
+    R_.setZero();
+    float sigma_pos = 0.000001; // 位置测量误差标准差（视觉定位）
+    for (int i = 0; i < 3; ++i) {
+        R_(i, i) = sigma_pos * sigma_pos;
+    }
+
+    // 初始化标志位
     initialized_ = false;
 }
 

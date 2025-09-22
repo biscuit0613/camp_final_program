@@ -29,12 +29,14 @@ class KFVisualizer(Node):
 
     #订阅里面回调函数的具体实现：（处理球的id还有时间戳的同步）
     def listener_callback(self, msg):
-       
-        ball_id_str, frame_num_str = msg.header.frame_id.split('_')
+        parts = msg.header.frame_id.split('_')
+        ball_id_str = parts[0]
+        frame_num_str = parts[1]
+        is_raw = len(parts) > 2 and parts[2] == 'raw'  # 检查是否为原始观测点
         ball_id = int(ball_id_str)
         frame_num = int(frame_num_str)
         t_rel = frame_num / self.fps
-        print(f'收到球的id是 {ball_id}: 坐标是{msg.point.x}, {msg.point.y}, {msg.point.z}, frame={frame_num}')
+        print(f'收到球的id是 {ball_id}: 坐标是{msg.point.x}, {msg.point.y}, {msg.point.z}, frame={frame_num}, raw={is_raw}')
         if ball_id not in self.points_dict:
             self.points_dict[ball_id] = []
         self.points_dict[ball_id].append((t_rel, (msg.point.x, msg.point.y, msg.point.z)))#在点的字典里依次添加点
@@ -51,9 +53,9 @@ class KFVisualizer(Node):
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         out_path = 'kf_visualization_output.mp4'
         out = cv2.VideoWriter(out_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
-        frame_idx = 0#帧索引
+        frame_idx = 0 # 帧索引
         base_colors = [(255,0,0), (0,255,0)]
-        #整了几个不同的颜色，确保不同id都有不同颜色，免得糊成依托。
+        # 整了几个不同的颜色，确保不同id都有不同颜色，免得糊成依托。
         while cap.isOpened():
             # 多 spin 几次以处理更多消息，减少滞后
             for _ in range(10):
@@ -68,7 +70,7 @@ class KFVisualizer(Node):
                 for ball_id, pts in self.points_dict.items():
                     ts = [p[0] for p in pts]
                     i_end = bisect.bisect_left(ts, t_frame)
-                    color = id2color.get(ball_id, (0, 0, 255))  # 默认蓝
+                    color = id2color.get(ball_id, (0, 0, 255))  
                     for i in range(i_end):
                         x, y, z = pts[i][1]
                         pt3d = np.array([[x, y, z]], dtype=np.float32)

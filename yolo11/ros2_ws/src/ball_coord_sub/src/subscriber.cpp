@@ -121,12 +121,12 @@ private:
 
     if (have_center_ && have_width_) {
       // solvePnP方法：用球心和球面上下左右五点做PnP解算，直接带参数就行，不用套公式了
-      double cx = last_cx_;
-      double cy = last_cy_;
-      double w = last_w_;
-      double h = last_w_; 
-      double D = 0.246; // 球实际直径，单位：米
-      double r = D / 2.0;
+      float cx = last_cx_;
+      float cy = last_cy_;
+      float w = last_w_;
+      float h = last_w_; 
+      float D = 0.246; // 球实际直径，单位：米
+      float r = D / 2.0;
       std::vector<cv::Point2f> imagePoints = {
           {cx, cy},// 球心
           {cx, cy - h/2},// 上
@@ -162,7 +162,7 @@ private:
             for (int j = 1; j <= KMrate; ++j) {  
               int frame_interp = last_frame_id + j;  // 计算插值帧号
               double t_interp = frame_interp / fps_;  // 计算插值时间
-              kf_map_[obj_id].predict(1.0 / (fps_ * KMrate));  // 卡尔曼滤波器预测
+              kf_map_[obj_id].predict(5.0 / (fps_ * KMrate));  // 卡尔曼滤波器预测
               Eigen::Vector3d pred = kf_map_[obj_id].getPosition();  // 获取预测位置
               current_obs = pred;
               kf_map_[obj_id].update(current_obs, 1.0 / (fps_ * KMrate));  // 用当前估计更新滤波器
@@ -184,23 +184,33 @@ private:
         if (corrected_missing > 0) {
           RCLCPP_INFO(this->get_logger(), "插了%d帧", corrected_missing); 
         }
-        kf_map_[obj_id].predict(1.0 / fps_ );  // 预测
+        kf_map_[obj_id].predict(5.0 / fps_ );  // 预测
         kf_map_[obj_id].update(obs, 1.0 / (fps_ * KMrate));  // 初始化KF
+        
+        // 发布原始观测点
+        geometry_msgs::msg::PointStamped raw_msg;
+        raw_msg.header.stamp = last_stamp_;
+        raw_msg.header.frame_id = std::to_string(obj_id) + "_" + std::to_string(frame_num) + "_raw";
+        raw_msg.point.x = obs[0];
+        raw_msg.point.y = obs[1];
+        raw_msg.point.z = obs[2];
+        kf_pub_->publish(raw_msg); 
+        
         for (int i = 0; i < KMrate; i++)
         {
-          kf_map_[obj_id].predict(1.0 / (fps_ * KMrate));  // 预测
+          kf_map_[obj_id].predict(5.0 / (fps_ * KMrate));  // 预测
           Eigen::Vector3d kf_pos = kf_map_[obj_id].getPosition();  // 获取预测估计位置
           // kf_map_[obj_id].update(kf_pos, 1.0 / (fps_ * KMrate));  // 更新
           RCLCPP_INFO(this->get_logger(), "Raw point: (%.3f, %.3f, %.3f), KF point: (%.3f, %.3f, %.3f)", 
-            kf_pos[0], kf_pos[1], kf_pos[2],
-            kf_map_[obj_id].getPosition()[0], kf_map_[obj_id].getPosition()[1], kf_map_[obj_id].getPosition()[2]);
+            obs[0], obs[1], obs[2],  // 使用 obs 作为 Raw point
+            kf_pos[0], kf_pos[1], kf_pos[2]);
           // 发布当前迭代轮数的卡尔曼滤波结果
           geometry_msgs::msg::PointStamped kf_msg;
           kf_msg.header.stamp = last_stamp_;
           kf_msg.header.frame_id = std::to_string(obj_id) + "_" + std::to_string(frame_num);
-          kf_msg.point.x = kf_map_[obj_id].getPosition()[0];
-          kf_msg.point.y = kf_map_[obj_id].getPosition()[1];
-          kf_msg.point.z = kf_map_[obj_id].getPosition()[2];
+          kf_msg.point.x = kf_pos[0];
+          kf_msg.point.y = kf_pos[1];
+          kf_msg.point.z = kf_pos[2];
           kf_pub_->publish(kf_msg);
           // last_frame_num_map_[obj_id] = frame_num;
           // last_time_map_[obj_id] = current_time;
