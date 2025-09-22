@@ -19,7 +19,7 @@
 class BallCoordSub : public rclcpp::Node {
 public:
   BallCoordSub() : Node("ball_coord_sub") {
-    // 从camera_calibration.json读取相机内参
+    // 从camera_calibration.json读取相机内参，用于solvePnP
     std::ifstream ifs("../src/camera_calibration.json");
     nlohmann::json j;
     ifs >> j;
@@ -31,13 +31,13 @@ public:
     for (size_t i = 0; i < j["distortion_coefficients"].size(); ++i)
       dist_coeffs_.at<double>(0, i) = j["distortion_coefficients"][i];
 
-    // 声明参数
-    this->declare_parameter("fps", 30.0);
+    //如果接收不到fps参数，就用默认的fps
+    this->declare_parameter("fps", 28.0);
     auto param_fps = this->get_parameter("fps");
     fps_ = param_fps.as_double();
-    RCLCPP_INFO(this->get_logger(), "初始 FPS: %.2f", fps_);
+    RCLCPP_INFO(this->get_logger(), "默认 FPS: %.2f", fps_);
 
-    // 订阅 FPS
+    // 订阅 FPS,后续用在卡尔曼补帧中传给predict方法的dt参数，时间步长这一块
     sub_fps_ = this->create_subscription<std_msgs::msg::Float32>(
       "/ball/fps",
       10,
@@ -89,14 +89,15 @@ private:
   double fps_; // 从订阅获取
 
   void printIfReady(const geometry_msgs::msg::PointStamped::SharedPtr& msg) {
-    // 解析frame_id，获取obj_id和frame_num
+    // 解析消息头的字符串，获取obj_id和frame_num
     std::stringstream ss(msg->header.frame_id);//publisher那边发送的frame_id是frame_idx,是帧索引（累计帧数）
     int obj_id, frame_num;
     char delim;
     ss >> obj_id >> delim >> frame_num;
-    //在publisher那边发送的球id和帧之间用_分隔，delim读取分隔符字符并跳过分隔符。
+    //在publisher那边发送的球id和帧之间用_分隔，delim占用分隔符字符并跳过分隔符。
     RCLCPP_INFO(this->get_logger(), "收到篮球id: %d, frame: %d", obj_id, frame_num);
 
+    //失败的空帧处理逻辑
     // if (obj_id == -1) {
     //   // 空帧：对所有活跃目标在该帧时刻进行一次预测并发布
     //   double time = frame_num / fps_;
@@ -183,12 +184,13 @@ private:
         if (corrected_missing > 0) {
           RCLCPP_INFO(this->get_logger(), "插了%d帧", corrected_missing); 
         }
+        kf_map_[obj_id].predict(1.0 / fps_ );  // 预测
         kf_map_[obj_id].update(obs, 1.0 / (fps_ * KMrate));  // 初始化KF
         for (int i = 0; i < KMrate; i++)
         {
           kf_map_[obj_id].predict(1.0 / (fps_ * KMrate));  // 预测
           Eigen::Vector3d kf_pos = kf_map_[obj_id].getPosition();  // 获取预测估计位置
-          kf_map_[obj_id].update(kf_pos, 1.0 / (fps_ * KMrate));  // 更新
+          // kf_map_[obj_id].update(kf_pos, 1.0 / (fps_ * KMrate));  // 更新
           RCLCPP_INFO(this->get_logger(), "Raw point: (%.3f, %.3f, %.3f), KF point: (%.3f, %.3f, %.3f)", 
             kf_pos[0], kf_pos[1], kf_pos[2],
             kf_map_[obj_id].getPosition()[0], kf_map_[obj_id].getPosition()[1], kf_map_[obj_id].getPosition()[2]);

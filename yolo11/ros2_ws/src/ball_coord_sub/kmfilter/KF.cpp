@@ -4,7 +4,7 @@ KF::KF() {
     state_.setZero();
     P_.setIdentity();
     Q_.setIdentity();
-    Q_ *= 1e-3; // 过程噪声：预测不确定性，调大更依赖观测
+    Q_ *= 1e-2; // 过程噪声：预测不确定性，调大更依赖观测
     R_.setIdentity();
     R_ *= 1e-3; // 观测噪声：调小更信任观测（测量结果置信度更高）
     initialized_ = false;
@@ -38,7 +38,7 @@ void KF::update(const Eigen::Vector3d& pos, float dt) {
         init(pos);
         return;
     }
-    predict(dt);
+    // predict(dt);
     // 观测矩阵 (3x9, 只观测位置)
     Eigen::Matrix<double, 3, 9> H = Eigen::Matrix<double, 3, 9>::Zero();
     H(0, 0) = 1; H(1, 1) = 1; H(2, 2) = 1;

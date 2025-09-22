@@ -12,7 +12,7 @@ class YoloBallPublisher(Node):
         super().__init__('yolo_ball_publisher')
 
         # 声明 ROS 参数
-        self.declare_parameter('video_path', 'test4/rgb.mp4')
+        self.declare_parameter('video_path', 'test5/rgb.mp4')
         self.declare_parameter('model_path', 'v1.pt')
         self.declare_parameter('conf_thresh', 0.7)
 
@@ -75,10 +75,15 @@ class YoloBallPublisher(Node):
         #这里挺纠结的，detect方法只能检测框，没有id，track方法能检测框还能给每个框分配一个id，但是检测率不如detect
         #尤其是在test2里面，篮球拍的速度太快要么换id了要么直接不检测了
         results = self.model.track(frame, persist=True, conf=self.conf)
-
-        if len(results) and results[0].boxes is not None:
+        #yolo的track方法返回一个结果列表，里面每个元素对应一帧图像，包含检测到的对象信息
+        if len(results) and results[0].boxes is not None:#boxes就是检测到的框
             boxes = results[0].boxes
-            xywh = boxes.xywh.cpu().numpy()
+            # boxes的属性：
+            # boxes.xywh 中心点xy和宽高wh
+            # boxes.conf 置信度
+            # boxes.id 跟踪id
+            # boxes.cls 类别
+            xywh = boxes.xywh.cpu().numpy()#把tensor转成numpy数组，2*2,第一行xy第二行wh
             # confs = boxes.conf.cpu().numpy() if hasattr(boxes, 'conf') else [1.0]*len(xywh)
             if hasattr(boxes, 'id') and boxes.id is not None:
                 ids = boxes.id.cpu().numpy()
@@ -93,7 +98,7 @@ class YoloBallPublisher(Node):
                 cy = y_center
                 width = max(1.0, w)
                 # obj_id才是传去cpp的id
-                obj_id = min(i, 1)  # 限制 ID 为 0 或 1（最多两个球），不然滤波器那边会乱套。
+                obj_id = min(i, 1)  # 限制 ID 为 0 或 1（最多两个球），不然滤波器那边会乱。
                 print(f'检测框{i}的ID是{obj_id}')
                 if obj_id not in self.trajectories:
                     self.trajectories[obj_id] = []
@@ -103,13 +108,14 @@ class YoloBallPublisher(Node):
                 #header包含时间戳和坐标系信息，point包含三维坐标
                 msg_center = PointStamped()#创建一个PointStamped消息对象
                 msg_center.header.stamp = self.get_clock().now().to_msg()#时间戳
-                msg_center.header.frame_id = f"{obj_id}_{self.frame_idx}"  # 传递id和帧号
-                #obj_id_frame_id
+                msg_center.header.frame_id = f"{obj_id}_{self.frame_idx}"  # 传递球的id和帧号
+                #消息头长这样：obj_id_frame_id，sub那边解析一下字符串就行
+                #也许可以改为传数组过去，但是懒得重构了
                 msg_center.point.x = cx
                 msg_center.point.y = cy
                 msg_center.point.z = width
                 self.pub_center.publish(msg_center)
-                self.publish_count += 1
+                self.publish_count += 1#发布坐标的计数器
                 # 把框和中心点可视化（由 visualize.py 处理）
                 # x1 = int(cx - width / 2)
                 # y1 = int(cy - h / 2)
@@ -127,6 +133,7 @@ class YoloBallPublisher(Node):
                 #     cv2.line(frame, pt1, pt2, (255, 0, 0), 2)
         else:
             # 空帧，发布空消息
+            # 这个对应的是原来失败的空帧处理逻辑，除了时间戳和帧ID以外没有其他用途
             msg_center = PointStamped()
             msg_center.header.stamp = self.get_clock().now().to_msg()
             msg_center.header.frame_id = f"-1_{self.frame_idx}"
