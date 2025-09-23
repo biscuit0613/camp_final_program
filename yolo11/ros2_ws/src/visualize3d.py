@@ -1,3 +1,4 @@
+# 可视化3D轨迹到RViz，需要解算世界坐标系，太复杂了就不做了
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import PointStamped, Point

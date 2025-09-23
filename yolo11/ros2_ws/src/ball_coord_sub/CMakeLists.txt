@@ -8,10 +8,11 @@ find_package(std_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 include_directories(${EIGEN3_INCLUDE_DIRS})
 
-add_executable(subscriber src/subscriber.cpp ../kmfilter/KalmanFilterJerk.cpp)
+add_executable(subscriber src/subscriber_node.cpp src/pnp_solver.cpp src/kalman_manager.cpp ../kmfilter/KalmanFilterJerk.cpp)
 find_package(nlohmann_json REQUIRED)
 find_package(OpenCV REQUIRED)
 include_directories(${NLOHMANN_JSON_INCLUDE_DIRS})
+include_directories(../common)
 ament_target_dependencies(subscriber rclcpp geometry_msgs std_msgs nlohmann_json OpenCV)
 install(TARGETS subscriber DESTINATION lib/${PROJECT_NAME})
 

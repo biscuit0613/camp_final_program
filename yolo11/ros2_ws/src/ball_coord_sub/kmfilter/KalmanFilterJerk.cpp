@@ -10,7 +10,7 @@ KalmanFilterJerk::KalmanFilterJerk() {
 
     // 初始化过程噪声矩阵 Q_
     Q_.setZero();
-    double sigma_a = 0.5; // 加速度噪声标准差（过程噪声来自于学长的篮球技术，以及篮球撞到然后反弹之类的不可预测的过程）
+    double sigma_a = 0.3; // 加速度噪声标准差（过程噪声来自于学长的篮球技术，以及篮球撞到然后反弹之类的不可预测的过程）
     double sigma_jerk = 5.0; // jerk噪声
     for (int i = 0; i < 3; ++i) {
         Q_(i, i) = 0.25 * sigma_a * sigma_a;       // 位置噪声
@@ -21,7 +21,7 @@ KalmanFilterJerk::KalmanFilterJerk() {
 
     // 初始化观测噪声矩阵 R_
     R_.setZero();
-    double sigma_pos = 0.00001; // 位置测量误差标准差（来自yolo检测，相对来说比较准确）
+    double sigma_pos = 0.0001; // 位置测量误差标准差（来自yolo检测，相对来说比较准确）
     for (int i = 0; i < 3; ++i) {
         R_(i, i) = sigma_pos * sigma_pos;
     }
