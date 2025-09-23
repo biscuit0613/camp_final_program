@@ -1,5 +1,7 @@
 #include "KF.hpp"
 
+//最初版本的滤波器，九维，位置速度加速度
+
 KF::KF() {
     // 初始化状态向量为零
     state_.setZero();

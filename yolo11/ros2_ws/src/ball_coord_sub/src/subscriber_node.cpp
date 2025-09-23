@@ -50,7 +50,8 @@ public:
         LastCx = msg->point.x;
         LastCy = msg->point.y;
         LastW = msg->point.z;
-        LastStamp = msg->header.stamp;
+        // 时间戳不再需要，详见publisher_node.py那边的注释
+        // LastStamp = msg->header.stamp;
         HaveCenter = true;
         HaveWidth = true;
         PrintIfReady(msg);
@@ -70,47 +71,68 @@ private:
     RCLCPP_INFO(this->get_logger(), "收到篮球id: %d, frame: %d", ObjId, FrameNum);
 
     if (HaveCenter && HaveWidth) {
-      std::vector<cv::Point2f> ImagePoints = {//这里可以不用类型转换，但是编译的时候会warning不好看
-          {static_cast<float>(LastCx), static_cast<float>(LastCy)},
-          {static_cast<float>(LastCx), static_cast<float>(LastCy - LastW / 2)},
-          {static_cast<float>(LastCx), static_cast<float>(LastCy + LastW / 2)},
-          {static_cast<float>(LastCx - LastW / 2), static_cast<float>(LastCy)},
-          {static_cast<float>(LastCx + LastW / 2), static_cast<float>(LastCy)}
-      };
-      
-      Eigen::Vector3d Obs;//Obs用来接收PnP解算结果，当作观测值传给卡尔曼滤波器
-      // 进行PnP解算
-      if (PnPSolver_->Solve(ImagePoints, Obs)) {
-        RCLCPP_INFO(this->get_logger(), "PnP 解算: (%.3f, %.3f, %.3f) id=%d", Obs[0], Obs[1], Obs[2], ObjId);
-
-        // 卡尔曼滤波逻辑（关于update参数dt的问题看最上面的注释）
-        kalmanManager.Update(ObjId, Obs, 1.0 / (Fps * KM_RATE));//忽略后面的dt参数，这里没用了
-        kalmanManager.Predict(ObjId, KM_FIX / Fps);
-        // kalmanManager.Update(ObjId, Obs, 1.0 / (Fps * KM_RATE));//忽略后面的dt参数，这里没用了
-
-        // 发布原始点
-        geometry_msgs::msg::PointStamped RawMsg;
-        RawMsg.header.stamp = LastStamp;
-        RawMsg.header.frame_id = std::to_string(ObjId) + "_" + std::to_string(FrameNum) + "_raw";
-        RawMsg.point.x = Obs[0];
-        RawMsg.point.y = Obs[1];
-        RawMsg.point.z = Obs[2];
-        KfPub->publish(RawMsg);
-
-        // 用卡尔曼滤波器的predict方法进行插值，并发布KF点
-        for (int i = 0; i < KM_RATE; i++) {
-          kalmanManager.Predict(ObjId, KM_FIX / (Fps * KM_RATE));//用predict进行插值，因为插值过程没有观测点，只需要一直预测迭代就好了
-          Eigen::Vector3d KfPos = kalmanManager.GetPosition(ObjId);//KfPos存储更新之后的目标点，然后发布出去
-          geometry_msgs::msg::PointStamped KfMsg;
-          KfMsg.header.stamp = LastStamp += rclcpp::Duration::from_seconds(KM_FIX / (Fps * KM_RATE));
-          KfMsg.header.frame_id = std::to_string(ObjId) + "_" + std::to_string(FrameNum);
-          KfMsg.point.x = KfPos[0];
-          KfMsg.point.y = KfPos[1];
-          KfMsg.point.z = KfPos[2];
-          KfPub->publish(KfMsg);
+      // 处理缺失帧的插值
+      //publisher那边发送的frame_id是-1就代表空帧，空帧我这里套了两个循环，
+      //最里面的循环就是正常的卡尔曼滤波预测一系列点插值的过程，和下面的一样
+      //外层循环次数基于missingFrame也就是缺失的帧数，决定了补多少次
+      //missingFrame就是去除空帧后相邻两帧，他们的帧索引之差减一
+      int lastFrame = LastFrameMap.count(ObjId) ? LastFrameMap[ObjId] : (FrameNum - 1);
+      if (FrameNum > lastFrame + 1) {
+        for (int missingFrame = lastFrame + 1; missingFrame < FrameNum; ++missingFrame) {
+          for (int i = 0; i < KM_RATE; ++i) {
+            kalmanManager.Predict(ObjId, KM_FIX / Fps);
+            Eigen::Vector3d kfPos = kalmanManager.GetPosition(ObjId);
+            geometry_msgs::msg::PointStamped kfMsg;
+            kfMsg.header.frame_id = std::to_string(ObjId) + "_" + std::to_string(missingFrame) + "_" + std::to_string(i + 1);
+            kfMsg.point.x = kfPos[0];
+            kfMsg.point.y = kfPos[1];
+            kfMsg.point.z = kfPos[2];
+            KfPub->publish(kfMsg);
+          }
         }
-      } else {
-        RCLCPP_WARN(this->get_logger(), "solvePnP 没成功");
+      }
+      LastFrameMap[ObjId] = FrameNum;
+
+      Eigen::Vector3d Obs;
+      if (LastW > 0) {
+        std::vector<cv::Point2f> ImagePoints = {
+            {static_cast<float>(LastCx), static_cast<float>(LastCy)},
+            {static_cast<float>(LastCx), static_cast<float>(LastCy - LastW / 2)},
+            {static_cast<float>(LastCx), static_cast<float>(LastCy + LastW / 2)},
+            {static_cast<float>(LastCx - LastW / 2), static_cast<float>(LastCy)},
+            {static_cast<float>(LastCx + LastW / 2), static_cast<float>(LastCy)}
+        };
+        
+        // 进行PnP解算
+        if (PnPSolver_->Solve(ImagePoints, Obs)) {
+          RCLCPP_INFO(this->get_logger(), "PnP 解算: (%.3f, %.3f, %.3f) id=%d", Obs[0], Obs[1], Obs[2], ObjId);
+
+          // 卡尔曼滤波逻辑
+          kalmanManager.Update(ObjId, Obs, 1.0 / (Fps * KM_RATE));
+          kalmanManager.Predict(ObjId, KM_FIX / Fps);
+
+          // 发布原始点
+          geometry_msgs::msg::PointStamped RawMsg;
+          RawMsg.header.frame_id = std::to_string(ObjId) + "_" + std::to_string(FrameNum) + "_raw";
+          RawMsg.point.x = Obs[0];
+          RawMsg.point.y = Obs[1];
+          RawMsg.point.z = Obs[2];
+          KfPub->publish(RawMsg);
+        } else {
+          RCLCPP_WARN(this->get_logger(), "solvePnP 没成功");
+        }
+      }
+
+      // 用卡尔曼滤波器的predict方法进行插值，并发布KF点
+      for (int i = 0; i < KM_RATE; i++) {
+        kalmanManager.Predict(ObjId, KM_FIX / Fps);
+        Eigen::Vector3d KfPos = kalmanManager.GetPosition(ObjId);
+        geometry_msgs::msg::PointStamped KfMsg;
+        KfMsg.header.frame_id = std::to_string(ObjId) + "_" + std::to_string(FrameNum) + "_" + std::to_string(i + 1);
+        KfMsg.point.x = KfPos[0];
+        KfMsg.point.y = KfPos[1];
+        KfMsg.point.z = KfPos[2];
+        KfPub->publish(KfMsg);
       }
       HaveCenter = HaveWidth = false;
     }
@@ -121,8 +143,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr SubFps;  // 订阅FPS信息
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr KfPub;  // 发布卡尔曼滤波后的位置
   
-  // 时间戳和状态变量
-  rclcpp::Time LastStamp;  // 最后接收到的消息时间戳
+  // 时间戳和状态变量（时间戳已移除，同步依赖帧索引）
   double Fps;  // 当前视频的FPS
   double LastCx, LastCy, LastW;  // 最后接收到的中心点坐标和宽度
   bool HaveCenter, HaveWidth;  // 标志位，表示是否收到中心点和宽度数据
@@ -131,6 +152,7 @@ private:
   cv::Mat CameraMatrix, DistCoeffs;  // 相机内参矩阵和畸变系数
   std::unique_ptr<PnPSolver> PnPSolver_;  // PnP解算器
   KalmanManager kalmanManager;  // 卡尔曼滤波管理器
+  std::unordered_map<int, int> LastFrameMap;  // 各目标最后处理的帧号
 };
 
 // 主函数：初始化ROS2，创建节点并开始spin

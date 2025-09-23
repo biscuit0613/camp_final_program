@@ -88,7 +88,8 @@ class YoloBallPublisher(Node):
                 self.Trajectories[ObjId].append((Cx, Cy))
 
                 MsgCenter = PointStamped()
-                MsgCenter.header.stamp = self.get_clock().now().to_msg()
+                # stamp里面的时间戳之前是用来同步点迹的，但发现只靠帧索引（frameidx）更直接,就不用绝对时间戳了
+                # MsgCenter.header.stamp = self.get_clock().now().to_msg()
                 MsgCenter.header.frame_id = f"{ObjId}_{self.FrameIdx}"
                 MsgCenter.point.x = Cx
                 MsgCenter.point.y = Cy
@@ -99,7 +100,7 @@ class YoloBallPublisher(Node):
             # 空帧
             MsgCenter = PointStamped()
             MsgCenter.header.stamp = self.get_clock().now().to_msg()
-            MsgCenter.header.frame_id = f"-1_{self.FrameIdx}"
+            MsgCenter.header.frame_id = f"0_{self.FrameIdx}"
             MsgCenter.point.x = 0.0
             MsgCenter.point.y = 0.0
             MsgCenter.point.z = 0.0

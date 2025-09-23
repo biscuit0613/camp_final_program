@@ -7,6 +7,15 @@ import cv2
 from trajectory_renderer import TrajectoryRenderer
 from common.config import *
 
+# 这里详细解释一下用帧索引同步的方法：
+"""
+    比如说yolo在第十五帧检测到了球,Publisher: frame_id = "0_15" (球ID=0, 帧=15)
+    然后数据传给sub,进行插值,插值的帧格式:"{ball_id}_{frame_num}_{sub_frame}"
+        Subscriber: frame_id = "0_15_1", "0_15_2", "0_15_3"...
+    最后给可视化这一块:把这个格式转化成小数,t_rel = frame_num + sub_frame / 100.0
+        Visualizer: 显示所有 frame_idx <= 当前播放帧 的点
+"""
+
 class KFVisualizer(Node):
     def __init__(self, VideoPath, CalibPath):
         super().__init__('kf_visualizer')
@@ -37,13 +46,13 @@ class KFVisualizer(Node):
         frame_idx = 0  # 帧索引
         while cap.isOpened():
             # 多 spin 几次以处理更多消息，减少滞后
-            for _ in range(10):
+            for i in range(KM_RATE):
                 rclpy.spin_once(self, timeout_sec=0.001)
             ret, frame = cap.read()
             if not ret:
                 break
-            t_frame = frame_idx / fps
-            frame = self.Renderer.RenderFrame(frame, t_frame)
+            # t_frame = frame_idx / fps
+            frame = self.Renderer.RenderFrame(frame, frame_idx)
             frame_idx += 1
             out.write(frame)
             cv2.imshow('KF Trajectory on Video', frame)

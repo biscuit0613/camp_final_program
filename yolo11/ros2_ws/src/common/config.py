@@ -2,9 +2,9 @@
 # 共享配置和常量定义文件，包含整个系统的配置参数
 
 # 视频和模型配置参数
-DEFAULT_VIDEO_PATH = 'test1/rgb.mp4'  # YOLO识别的视频路径，在publisher和可视化模块中都会用到
+DEFAULT_VIDEO_PATH = 'test5/rgb.mp4'  # YOLO识别的视频路径，在publisher和可视化模块中都会用到
 DEFAULT_MODEL_PATH = 'v1.pt'  # YOLO模型文件路径
-DEFAULT_CONF_THRESH = 0.65  # YOLO检测的置信度阈值，低于此值的不发送
+DEFAULT_CONF_THRESH = 0.70  # YOLO检测的置信度阈值，低于此值的不发送
 DEFAULT_CALIB_PATH = 'ball_coord_sub/src/camera_calibration.json'  # 相机标定参数文件路径
 DEFAULT_FPS = 28.0  # 默认帧率，因为每个视频帧率不同，需要单独获取，没啥用
 
